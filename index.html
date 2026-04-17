@@ -1,1 +1,427 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Space Shooter - Evolution Edition</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            touch-action: none;
+        }
+        canvas {
+            display: block;
+            background: radial-gradient(circle, #0a0a1a 0%, #000000 100%);
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            color: white;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        .menu-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.9);
+            padding: 2.5rem;
+            border-radius: 1.5rem;
+            border: 2px solid #4f46e5;
+            text-align: center;
+            pointer-events: auto;
+            min-width: 320px;
+        }
+        .power-up-active {
+            color: #fbbf24;
+            text-shadow: 0 0 10px #fbbf24;
+        }
+    </style>
+</head>
+<body>
 
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui-layer">
+        <div class="flex justify-between items-center text-xl font-bold">
+            <div>SCORE: <span id="score">0</span></div>
+            <div id="power-indicator" class="text-sm"></div>
+            <div>LEVEL: <span id="level">1</span></div>
+        </div>
+        
+        <div id="menu" class="menu-overlay">
+            <h1 id="menu-title" class="text-4xl font-black mb-2 text-indigo-400">GALAXY EVOLUTION</h1>
+            <p id="level-label" class="text-indigo-300 mb-4 font-bold"></p>
+            <div id="menu-desc" class="mb-6 text-gray-300 text-sm space-y-2">
+                <p>左右キー: 移動 / スペース: 射撃</p>
+                <p class="text-xs text-gray-500">レベルが上がると敵のHPと姿が進化します</p>
+                <div class="flex justify-center gap-4 mt-2">
+                    <span class="text-blue-400">[W] Wide</span>
+                    <span class="text-yellow-400">[S] Speed</span>
+                </div>
+            </div>
+            <button id="start-btn" class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-10 rounded-full transition-all transform hover:scale-105 pointer-events-auto">
+                START MISSION
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const levelElement = document.getElementById('level');
+        const powerIndicator = document.getElementById('power-indicator');
+        const menu = document.getElementById('menu');
+        const menuTitle = document.getElementById('menu-title');
+        const menuDesc = document.getElementById('menu-desc');
+        const startBtn = document.getElementById('start-btn');
+
+        let gameState = 'MENU';
+        let score = 0;
+        let level = 1;
+        let frameCount = 0;
+
+        const player = {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 40,
+            baseSpeed: 6,
+            speed: 6,
+            color: '#4f46e5',
+            powerUps: {
+                tripleShot: 0,
+                speedBoost: 0
+            }
+        };
+
+        let projectiles = [];
+        let enemies = [];
+        let particles = [];
+        let items = [];
+        const keys = {};
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            player.x = canvas.width / 2 - player.width / 2;
+            player.y = canvas.height - 80;
+        }
+
+        window.addEventListener('resize', resize);
+        resize();
+
+        window.addEventListener('keydown', e => keys[e.code] = true);
+        window.addEventListener('keyup', e => keys[e.code] = false);
+
+        let touchX = null;
+        window.addEventListener('touchstart', e => { touchX = e.touches[0].clientX; });
+        window.addEventListener('touchmove', e => { touchX = e.touches[0].clientX; });
+        window.addEventListener('touchend', () => { touchX = null; });
+
+        // 敵のタイプ定義
+        function getEnemyConfig(lvl) {
+            if (lvl <= 2) return { hp: 1, color: '#4ade80', shape: 'scout' }; // 緑: 弱い
+            if (lvl <= 4) return { hp: 2, color: '#f87171', shape: 'fighter' }; // 赤: 普通
+            if (lvl <= 7) return { hp: 3, color: '#a78bfa', shape: 'interceptor' }; // 紫: 硬い
+            return { hp: 5, color: '#f472b6', shape: 'destroyer' }; // ピンク: 非常に硬い
+        }
+
+        function spawnEnemies() {
+            const config = getEnemyConfig(level);
+            const rows = Math.min(2 + Math.floor(level / 4), 5);
+            const cols = Math.min(Math.floor(canvas.width / 80), 8);
+            const startX = (canvas.width - (cols * 60)) / 2;
+            
+            for (let i = 0; i < rows; i++) {
+                for (let j = 0; j < cols; j++) {
+                    enemies.push({
+                        x: startX + j * 60,
+                        y: 40 + i * 50,
+                        width: 32,
+                        height: 28,
+                        speed: 0.4 + (level * 0.12),
+                        direction: 1,
+                        hp: config.hp,
+                        maxHp: config.hp,
+                        color: config.color,
+                        shape: config.shape
+                    });
+                }
+            }
+        }
+
+        function createExplosion(x, y, color, size = 1) {
+            for (let i = 0; i < 8 * size; i++) {
+                particles.push({
+                    x, y,
+                    vx: (Math.random() - 0.5) * 10 * size,
+                    vy: (Math.random() - 0.5) * 10 * size,
+                    radius: Math.random() * 3 * size,
+                    color,
+                    alpha: 1
+                });
+            }
+        }
+
+        function spawnItem(x, y) {
+            if (Math.random() < 0.18) { 
+                const type = Math.random() > 0.5 ? 'tripleShot' : 'speedBoost';
+                items.push({
+                    x, y,
+                    width: 25,
+                    height: 25,
+                    type: type,
+                    speed: 1.5,
+                    color: type === 'tripleShot' ? '#60a5fa' : '#fbbf24',
+                    label: type === 'tripleShot' ? 'W' : 'S'
+                });
+            }
+        }
+
+        function update() {
+            if (gameState !== 'PLAYING') return;
+            frameCount++;
+
+            if (player.powerUps.tripleShot > 0) player.powerUps.tripleShot--;
+            if (player.powerUps.speedBoost > 0) {
+                player.powerUps.speedBoost--;
+                player.speed = player.baseSpeed * 1.5;
+            } else {
+                player.speed = player.baseSpeed;
+            }
+
+            let status = [];
+            if (player.powerUps.tripleShot > 0) status.push("WIDE SHOT");
+            if (player.powerUps.speedBoost > 0) status.push("SPEED UP");
+            powerIndicator.innerText = status.join(" | ");
+            powerIndicator.className = status.length > 0 ? "power-up-active text-sm" : "text-sm";
+
+            if (keys['ArrowLeft'] && player.x > 0) player.x -= player.speed;
+            if (keys['ArrowRight'] && player.x < canvas.width - player.width) player.x += player.speed;
+
+            if (touchX !== null) {
+                if (touchX < canvas.width / 2 && player.x > 0) player.x -= player.speed;
+                if (touchX >= canvas.width / 2 && player.x < canvas.width - player.width) player.x += player.speed;
+            }
+
+            // 射撃
+            if ((keys['Space'] || touchX !== null) && frameCount % 12 === 0) {
+                const centerX = player.x + player.width / 2 - 2;
+                if (player.powerUps.tripleShot > 0) {
+                    projectiles.push({ x: centerX, y: player.y, vx: 0, vy: -10 });
+                    projectiles.push({ x: centerX, y: player.y, vx: -2.5, vy: -9 });
+                    projectiles.push({ x: centerX, y: player.y, vx: 2.5, vy: -9 });
+                } else {
+                    projectiles.push({ x: centerX, y: player.y, vx: 0, vy: -10 });
+                }
+            }
+
+            projectiles.forEach((p, index) => {
+                p.x += p.vx || 0;
+                p.y += p.vy;
+                if (p.y < 0 || p.x < 0 || p.x > canvas.width) projectiles.splice(index, 1);
+            });
+
+            items.forEach((item, index) => {
+                item.y += item.speed;
+                if (item.y + item.height > player.y && item.x < player.x + player.width && item.x + item.width > player.x) {
+                    player.powerUps[item.type] = 600; 
+                    items.splice(index, 1);
+                    score += 100;
+                    scoreElement.innerText = score;
+                }
+                if (item.y > canvas.height) items.splice(index, 1);
+            });
+
+            let edgeReached = false;
+            enemies.forEach(e => {
+                e.x += e.speed * e.direction;
+                if (e.x <= 10 || e.x >= canvas.width - e.width - 10) edgeReached = true;
+                if (e.y + e.height >= player.y && e.x < player.x + player.width && e.x + e.width > player.x) {
+                    gameOver();
+                }
+            });
+
+            if (edgeReached) {
+                enemies.forEach(e => {
+                    e.direction *= -1;
+                    e.y += 20;
+                    if (e.y > player.y) gameOver();
+                });
+            }
+
+            // 当たり判定
+            projectiles.forEach((p, pIdx) => {
+                enemies.forEach((e, eIdx) => {
+                    if (p.x < e.x + e.width && p.x + 4 > e.x && p.y < e.y + e.height && p.y + 12 > e.y) {
+                        e.hp--;
+                        projectiles.splice(pIdx, 1);
+                        
+                        if (e.hp <= 0) {
+                            createExplosion(e.x + e.width/2, e.y + e.height/2, e.color, 1.5);
+                            spawnItem(e.x, e.y);
+                            enemies.splice(eIdx, 1);
+                            score += 20 * level;
+                            scoreElement.innerText = score;
+                        } else {
+                            // ヒット時の火花
+                            createExplosion(p.x, p.y, '#ffffff', 0.3);
+                        }
+                    }
+                });
+            });
+
+            particles.forEach((p, index) => {
+                p.x += p.vx; p.y += p.vy; p.alpha -= 0.04;
+                if (p.alpha <= 0) particles.splice(index, 1);
+            });
+
+            if (enemies.length === 0 && gameState === 'PLAYING') {
+                level++;
+                levelElement.innerText = level;
+                spawnEnemies();
+            }
+        }
+
+        function drawEnemy(e) {
+            ctx.fillStyle = e.color;
+            ctx.save();
+            ctx.translate(e.x + e.width/2, e.y + e.height/2);
+
+            // HPバー（ダメージを受けている場合のみ表示）
+            if (e.hp < e.maxHp) {
+                ctx.fillStyle = '#333';
+                ctx.fillRect(-e.width/2, -e.height/2 - 8, e.width, 4);
+                ctx.fillStyle = '#ff0000';
+                ctx.fillRect(-e.width/2, -e.height/2 - 8, (e.hp/e.maxHp) * e.width, 4);
+                ctx.fillStyle = e.color;
+            }
+
+            // 形状の描画
+            ctx.beginPath();
+            switch(e.shape) {
+                case 'scout': // 四角ベース
+                    ctx.rect(-e.width/2, -e.height/2, e.width, e.height);
+                    break;
+                case 'fighter': // 三角/ウィング
+                    ctx.moveTo(0, e.height/2);
+                    ctx.lineTo(-e.width/2, -e.height/2);
+                    ctx.lineTo(e.width/2, -e.height/2);
+                    break;
+                case 'interceptor': // 複雑な形状
+                    ctx.moveTo(0, e.height/2);
+                    ctx.lineTo(-e.width/2, 0);
+                    ctx.lineTo(-e.width/4, -e.height/2);
+                    ctx.lineTo(e.width/4, -e.height/2);
+                    ctx.lineTo(e.width/2, 0);
+                    break;
+                case 'destroyer': // 重厚な形状
+                    ctx.rect(-e.width/2, -e.height/4, e.width, e.height/2);
+                    ctx.rect(-e.width/4, -e.height/2, e.width/2, e.height);
+                    break;
+            }
+            ctx.fill();
+
+            // 装飾（目や窓）
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.fillRect(-4, 0, 8, 4);
+
+            ctx.restore();
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 背景
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+            for(let i=0; i<20; i++) {
+                let y = ((frameCount * (1 + (i%3))) % canvas.height);
+                ctx.fillRect((i * 100) % canvas.width, y, 1, 1);
+            }
+
+            // プレイヤー
+            ctx.fillStyle = player.speed > player.baseSpeed ? '#fbbf24' : player.color;
+            ctx.beginPath();
+            ctx.moveTo(player.x + player.width/2, player.y);
+            ctx.lineTo(player.x, player.y + player.height);
+            ctx.lineTo(player.x + player.width, player.y + player.height);
+            ctx.fill();
+
+            // 弾
+            ctx.fillStyle = player.powerUps.tripleShot > 0 ? '#60a5fa' : '#fbbf24';
+            projectiles.forEach(p => ctx.fillRect(p.x, p.y, 4, 12));
+
+            // アイテム
+            items.forEach(item => {
+                ctx.fillStyle = item.color;
+                ctx.beginPath();
+                ctx.arc(item.x + item.width/2, item.y + item.height/2, item.width/2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = 'black';
+                ctx.font = 'bold 12px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(item.label, item.x + item.width/2, item.y + item.height/2 + 4);
+            });
+
+            // 敵
+            enemies.forEach(e => drawEnemy(e));
+
+            // 爆発
+            particles.forEach(p => {
+                ctx.globalAlpha = p.alpha;
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                ctx.fill();
+            });
+            ctx.globalAlpha = 1.0;
+
+            requestAnimationFrame(draw);
+        }
+
+        function startGame() {
+            score = 0;
+            level = 1;
+            enemies = [];
+            projectiles = [];
+            particles = [];
+            items = [];
+            player.powerUps.tripleShot = 0;
+            player.powerUps.speedBoost = 0;
+            scoreElement.innerText = score;
+            levelElement.innerText = level;
+            gameState = 'PLAYING';
+            menu.classList.add('hidden');
+            resize(); 
+            spawnEnemies();
+        }
+
+        function gameOver() {
+            gameState = 'GAMEOVER';
+            menu.classList.remove('hidden');
+            menuTitle.innerText = 'GAME OVER';
+            menuTitle.style.color = '#ef4444';
+            menuDesc.innerHTML = `<p class="text-xl mb-2">SCORE: ${score}</p><p>到達レベル: ${level}</p>`;
+            startBtn.innerText = 'RETRY MISSION';
+        }
+
+        startBtn.addEventListener('click', startGame);
+
+        setInterval(update, 1000/60); 
+        draw();
+    </script>
+</body>
+</html>
