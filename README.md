@@ -1,2 +1,2 @@
-# first-app
+# firstapp
 初めてのアプリ
